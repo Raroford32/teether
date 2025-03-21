@@ -1,6 +1,11 @@
 from collections import deque
 
 from teether.cfg.opcodes import memory_reads, memory_writes
+from teether.slicing import backward_slice, slice_to_program
+from teether.evm.evm import run
+from teether.evm.state import EVMState
+from teether.evm.exceptions import ExternalData
+from teether.util.intrange import Range
 
 
 class InconsistentRange(Exception):
@@ -31,11 +36,14 @@ class MemoryInfo(object):
 
 
 def get_memory_info(ins, code, memory_infos=None):
-    from .slicing import backward_slice, slice_to_program
-    from .evm.evm import run
-    from .evm.state import EVMState
-    from .evm.exceptions import ExternalData
-    from .util.intrange import Range
+    """
+    Get memory information for a given instruction.
+
+    :param ins: Instruction to analyze.
+    :param code: Bytecode of the program.
+    :param memory_infos: Dictionary of precomputed memory information.
+    :return: MemoryInfo object containing read and write ranges.
+    """
     targets = []
 
     read = False
@@ -90,6 +98,13 @@ def get_memory_info(ins, code, memory_infos=None):
 
 
 def resolve_all_memory(cfg, code):
+    """
+    Resolve memory information for all instructions in the control flow graph (CFG).
+
+    :param cfg: Control flow graph (CFG) of the program.
+    :param code: Bytecode of the program.
+    :return: Dictionary of memory information for each instruction.
+    """
     memory_infos = dict()
     resolve_later = deque(
         ins for bb in cfg.bbs for ins in bb.ins if ins.name in memory_reads or ins.name in memory_writes)

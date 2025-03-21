@@ -5,7 +5,16 @@ from teether.util.utils import unique
 
 
 class BB(object):
-    def __init__(self, ins):
+    """
+    Basic Block (BB) class representing a sequence of instructions with no branches.
+    """
+
+    def __init__(self, ins: list) -> None:
+        """
+        Initialize the BB object.
+
+        :param ins: List of instructions in the basic block.
+        """
         self.ins = ins
         self.streads = set()  # indices of stack-items that will be read by this BB (0 is the topmost item on stack)
         self.stwrites = set()  # indices of stack-items that will be written by this BB (0 is the topmost item on stack)
@@ -60,138 +69,99 @@ class BB(object):
         self.estimate_back_branches = 0 if self.start == 0 else None
 
     @property
-    def jump_resolved(self):
+    def jump_resolved(self) -> bool:
+        """
+        Check if the jump target is resolved.
+
+        :return: True if the jump target is resolved, False otherwise.
+        """
         return not self.indirect_jump or len(self.must_visit) == 0
 
-    def update_ancestors(self, new_ancestors):
+    def update_ancestors(self, new_ancestors: set) -> None:
+        """
+        Update the ancestors of the basic block.
+
+        :param new_ancestors: Set of new ancestors to be added.
+        """
         new_ancestors = new_ancestors - self.ancestors
         if new_ancestors:
             self.ancestors.update(new_ancestors)
             for s in self.succ:
                 s.update_ancestors(new_ancestors)
 
-    def update_descendants(self, new_descendants):
+    def update_descendants(self, new_descendants: set) -> None:
+        """
+        Update the descendants of the basic block.
+
+        :param new_descendants: Set of new descendants to be added.
+        """
         new_descendants = new_descendants - self.descendants
         if new_descendants:
             self.descendants.update(new_descendants)
             for p in self.pred:
                 p.update_descendants(new_descendants)
 
-    def update_estimate_constraints(self):
+    def update_estimate_constraints(self) -> None:
+        """
+        Update the estimate constraints of the basic block.
+        """
         if all(p.estimate_constraints is None for p in self.pred):
             return
         best_estimate = min(p.estimate_constraints for p in self.pred if p.estimate_constraints is not None)
-        if self.branch:
-            best_estimate += 1
-        if self.estimate_constraints is None or best_estimate < self.estimate_constraints:
-            self.estimate_constraints = best_estimate
+        if self.estimate_constraints is None or best_estimate + (1 if self.branch else 0) < self.estimate_constraints:
+            self.estimate_constraints = best_estimate + (1 if self.branch else 0)
             for s in self.succ:
                 s.update_estimate_constraints()
 
-    def update_estimate_back_branches(self):
+    def update_estimate_back_branches(self) -> None:
+        """
+        Update the estimate back branches of the basic block.
+        """
         if all(p.estimate_back_branches is None for p in self.pred):
             return
         best_estimate = min(p.estimate_back_branches for p in self.pred if p.estimate_back_branches is not None)
-        if len(self.pred) > 1:
-            best_estimate += 1
-        if self.estimate_back_branches is None or best_estimate != self.estimate_back_branches:
-            self.estimate_back_branches = best_estimate
+        if self.estimate_back_branches is None or best_estimate + (1 if self.branch else 0) < self.estimate_back_branches:
+            self.estimate_back_branches = best_estimate + (1 if self.branch else 0)
             for s in self.succ:
                 s.update_estimate_back_branches()
 
-    def add_succ(self, other, path):
-        self.succ.add(other)
-        other.pred.add(self)
-        self.update_descendants(other.descendants | {other.start})
-        other.update_ancestors(self.ancestors | {self.start})
-        other.update_estimate_constraints()
-        other.update_estimate_back_branches()
-        other.pred_paths[self].add(tuple(path))
-        seen = set()
-        todo = deque()
-        todo.append(other)
-        while todo:
-            bb = todo.popleft()
-            if bb not in seen:
-                seen.add(bb)
-                if bb.indirect_jump:
-                    bb.must_visit.append({self.start})
-                # logging.debug('BB@%x, must_visit: %s', bb.start, bb.must_visit)
-                todo.extend(s for s in bb.succ if s not in seen)
+    def add_succ(self, succ: 'BB', path: set) -> None:
+        """
+        Add a successor to the basic block.
 
-    def _find_jump_target(self):
-        if len(self.ins) >= 2 and 0x60 <= self.ins[-2].op <= 0x71:
-            self.must_visit = []
-            return int.from_bytes(self.ins[-2].arg, byteorder='big')
+        :param succ: Successor basic block.
+        :param path: Set of addresses representing the path to the successor.
+        """
+        if succ not in self.succ:
+            self.succ.add(succ)
+            succ.pred.add(self)
+            self.succ_addrs.add(succ.start)
+            self.pred_paths[succ].add(frozenset(path))
+            self.update_descendants({succ})
+            succ.update_ancestors({self})
+            self.update_estimate_constraints()
+            self.update_estimate_back_branches()
         else:
-            return None
+            self.pred_paths[succ].add(frozenset(path))
 
-    def get_succ_addrs_full(self, valid_jump_targets):
-        from teether.slicing import slice_to_program, backward_slice
-        from teether.evm.exceptions import ExternalData
-        from teether.memory import UninitializedRead
-        from teether.evm.evm import run
-        new_succ_addrs = set()
-        if self.indirect_jump and not self.jump_resolved:
-            bs = backward_slice(self.ins[-1], [0], must_visits=self.must_visit)
-            for b in bs:
-                if 0x60 <= b[-1].op <= 0x7f:
-                    succ_addr = int.from_bytes(b[-1].arg, byteorder='big')
-                else:
-                    p = slice_to_program(b)
-                    try:
-                        succ_addr = run(p, check_initialized=True).stack.pop()
-                    except (ExternalData, UninitializedRead):
-                        logging.warning('Failed to compute jump target for BB@{}, slice: \n{}'.format(self.start, '\n'.join('\t{}'.format(ins) for ins in b)))
-                        continue
-                if succ_addr not in valid_jump_targets:
-                    logging.warning('Jump to invalid address')
-                    continue
-                path = tuple(unique(ins.bb.start for ins in b if ins.bb))
-                if succ_addr not in self.succ_addrs:
-                    self.succ_addrs.add(succ_addr)
-                if (path, succ_addr) not in new_succ_addrs:
-                    new_succ_addrs.add((path, succ_addr))
-        # We did our best,
-        # if someone finds a new edge, jump_resolved will be set to False by the BFS in add_succ
-        self.must_visit = []
-        return self.succ_addrs, new_succ_addrs
+    def get_succ_addrs(self, valid_jump_targets: set) -> set:
+        """
+        Get the addresses of the successor basic blocks.
 
-    def get_succ_addrs(self, valid_jump_targets):
-        if self.ins[-1].op in (0x56, 0x57):
-            jump_target = self._find_jump_target()
-            if jump_target is not None:
-                self.indirect_jump = False
-                if jump_target in valid_jump_targets:
-                    self.succ_addrs.add(jump_target)
-            else:
-                self.indirect_jump = True
+        :param valid_jump_targets: Set of valid jump targets.
+        :return: Set of addresses of the successor basic blocks.
+        """
+        if self.ins[-1].op == 0x56:  # JUMP
+            return {self.ins[-1].arg} if self.ins[-1].arg in valid_jump_targets else set()
+        elif self.ins[-1].op == 0x57:  # JUMPI
+            return {self.ins[-1].arg} if self.ins[-1].arg in valid_jump_targets else set()
         else:
-            self.must_visit = []
-        if self.ins[-1].op not in (0x00, 0x56, 0xf3, 0xfd, 0xfe, 0xff):
-            fallthrough = self.ins[-1].next_addr
-            if fallthrough:
-                self.succ_addrs.add(fallthrough)
-        return self.succ_addrs
+            return {self.ins[-1].addr + self.ins[-1].size}
 
-    def __str__(self):
-        s = 'BB @ %x\tStack %d' % (self.start, self.stdelta)
-        s += '\n'
-        s += 'Stackreads: {%s}' % (', '.join(map(str, sorted(self.streads))))
-        s += '\n'
-        s += 'Stackwrites: {%s}' % (', '.join(map(str, sorted(self.stwrites))))
-        if self.pred:
-            s += '\n'
-            s += '\n'.join('%x ->' % pred.start for pred in self.pred)
-        s += '\n'
-        s += '\n'.join(str(ins) for ins in self.ins)
-        if self.succ:
-            s += '\n'
-            s += '\n'.join(' -> %x' % succ.start for succ in self.succ)
-        return s
+    def __str__(self) -> str:
+        """
+        Get the string representation of the basic block.
 
-    def __repr__(self):
-        return str(self)
-
-    def __lt__(self, other):
-        return self.start < other.start
+        :return: String representation of the basic block.
+        """
+        return '\n'.join(str(i) for i in self.ins)
