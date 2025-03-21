@@ -210,7 +210,17 @@ class EVMState(AbstractEVMState):
 
 
 class SymbolicEVMState(AbstractEVMState):
-    def __init__(self, xid, code=None):
+    """
+    SymbolicEVMState represents the state of the Ethereum Virtual Machine (EVM) during symbolic execution.
+    """
+
+    def __init__(self, xid: int, code: bytearray = None):
+        """
+        Initialize the SymbolicEVMState object.
+
+        :param xid: Execution ID for the symbolic state.
+        :param code: Bytecode of the program.
+        """
         super(SymbolicEVMState, self).__init__(code)
         self.memory = SymbolicMemory()
         self.storage = SymbolicStorage(xid)
@@ -218,11 +228,13 @@ class SymbolicEVMState(AbstractEVMState):
         self.start_balance = z3.BitVec('BALANCE_%d' % xid, 256)
         self.balance = self.start_balance
 
-    def copy(self, new_xid):
-        # Make a superficial copy of this state.
-        # Effectively, only the storage is copied,
-        # as this is sufficient to prepend a
-        # result with this state to another call
+    def copy(self, new_xid: int) -> 'SymbolicEVMState':
+        """
+        Create a copy of the SymbolicEVMState object with a new execution ID.
+
+        :param new_xid: New execution ID for the copied state.
+        :return: Copied SymbolicEVMState object.
+        """
         new_storage = self.storage.copy(new_xid)
         new_state = SymbolicEVMState(new_xid)
         new_state.storage = new_storage

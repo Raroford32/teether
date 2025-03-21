@@ -2,10 +2,22 @@ import logging
 from collections import deque
 
 from teether.cfg.bb import BB
+from typing import List, Dict, Set, Tuple, Union, Optional
 
 
 class CFG(object):
-    def __init__(self, bbs, fix_xrefs=True, fix_only_easy_xrefs=False):
+    """
+    Control Flow Graph (CFG) class representing the control flow of a program.
+    """
+
+    def __init__(self, bbs: List[BB], fix_xrefs: bool = True, fix_only_easy_xrefs: bool = False):
+        """
+        Initialize the CFG object.
+
+        :param bbs: List of basic blocks (BB) in the program.
+        :param fix_xrefs: Flag to indicate whether to fix cross-references.
+        :param fix_only_easy_xrefs: Flag to indicate whether to fix only easy cross-references.
+        """
         self.bbs = sorted(bbs)
         self._bb_at = {bb.start: bb for bb in self.bbs}
         self._ins_at = {i.addr: i for bb in self.bbs for i in bb.ins}
@@ -17,10 +29,22 @@ class CFG(object):
         self._dd = dict()
 
     @property
-    def bb_addrs(self):
+    def bb_addrs(self) -> frozenset:
+        """
+        Get the set of basic block addresses.
+
+        :return: Set of basic block addresses.
+        """
         return frozenset(self._bb_at.keys())
 
-    def filter_ins(self, names, reachable=False):
+    def filter_ins(self, names: Union[str, List[str]], reachable: bool = False) -> List:
+        """
+        Filter instructions based on their names and reachability.
+
+        :param names: List of instruction names to filter.
+        :param reachable: Flag to indicate whether to filter only reachable instructions.
+        :return: List of filtered instructions.
+        """
         if isinstance(names, str):
             names = [names]
         if not reachable:
@@ -28,15 +52,20 @@ class CFG(object):
         else:
             return [ins for bb in self.bbs for ins in bb.ins if ins.name in names and 0 in bb.ancestors | {bb.start}]
 
-    def _xrefs(self, fix_only_easy_xrefs=False):
-        # logging.debug('Fixing Xrefs')
+    def _xrefs(self, fix_only_easy_xrefs: bool = False):
+        """
+        Fix cross-references in the CFG.
+
+        :param fix_only_easy_xrefs: Flag to indicate whether to fix only easy cross-references.
+        """
         self._easy_xrefs()
-        # logging.debug('Easy Xrefs fixed, turning to hard ones now')
         if not fix_only_easy_xrefs:
             self._hard_xrefs()
-            # logging.debug('Hard Xrefs also fixed, good to go')
 
     def _easy_xrefs(self):
+        """
+        Fix easy cross-references in the CFG.
+        """
         for pred in self.bbs:
             for succ_addr in pred.get_succ_addrs(self.valid_jump_targets):
                 if succ_addr and succ_addr in self._bb_at:
@@ -44,6 +73,9 @@ class CFG(object):
                     pred.add_succ(succ, {pred.start})
 
     def _hard_xrefs(self):
+        """
+        Fix hard cross-references in the CFG.
+        """
         new_link = True
         links = set()
         while new_link:
@@ -59,25 +91,36 @@ class CFG(object):
                         succ = self._bb_at[succ_addr]
                         pred.add_succ(succ, new_succ_path)
                         if not (pred.start, succ.start) in links:
-                            # logging.debug('found new link from %x to %x', pred.start, succ.start)
-                            # with open('cfg-tmp%d.dot' % len(links), 'w') as outfile:
-                            #    outfile.write(self.to_dot())
                             new_link = True
                             links.add((pred.start, succ.start))
 
-    def data_dependence(self, ins):
+    def data_dependence(self, ins) -> Set:
+        """
+        Get the data dependence of an instruction.
+
+        :param ins: Instruction to get data dependence for.
+        :return: Set of instructions that the given instruction depends on.
+        """
         if not ins in self._dd:
             from teether.slicing import backward_slice
             self._dd[ins] = set(i for s in backward_slice(ins) for i in s if i.bb)
         return self._dd[ins]
 
     @property
-    def dominators(self):
+    def dominators(self) -> Dict:
+        """
+        Get the dominators of the CFG.
+
+        :return: Dictionary of dominators.
+        """
         if not self._dominators:
             self._compute_dominators()
         return self._dominators
 
     def _compute_dominators(self):
+        """
+        Compute the dominators of the CFG.
+        """
         import networkx
         g = networkx.DiGraph()
         for bb in self.bbs:
@@ -85,10 +128,21 @@ class CFG(object):
                 g.add_edge(bb.start, succ.start)
         self._dominators = {self._bb_at[k]: self._bb_at[v] for k, v in networkx.immediate_dominators(g, 0).items()}
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """
+        Get the string representation of the CFG.
+
+        :return: String representation of the CFG.
+        """
         return '\n\n'.join(str(bb) for bb in self.bbs)
 
-    def to_dot(self, minimal=False):
+    def to_dot(self, minimal: bool = False) -> str:
+        """
+        Convert the CFG to DOT format.
+
+        :param minimal: Flag to indicate whether to generate a minimal DOT representation.
+        :return: DOT representation of the CFG.
+        """
         s = 'digraph g {\n'
         s += '\tsplines=ortho;\n'
         s += '\tnode[fontname="courier"];\n'
@@ -104,10 +158,6 @@ class CFG(object):
             to_block = 'To: ' + ', '.join('%x' % succ.start for succ in sorted(bb.succ))
             ins_block = '<br align="left"/>'.join(
                 '%4x: %02x %s %s' % (ins.addr, ins.op, ins.name, ins.arg.hex() if ins.arg else '') for ins in bb.ins)
-            # ancestors = 'Ancestors: %s'%(', '.join('%x'%addr for addr in sorted(a for a in bb.ancestors)))
-            # descendants = 'Descendants: %s' % (', '.join('%x' % addr for addr in sorted(a for a in bb.descendants)))
-            # s += '\t%d [shape=box,label=<<b>%x</b>:<br align="left"/>%s<br align="left"/>%s<br align="left"/>%s<br align="left"/>>];\n' % (
-            #    bb.start, bb.start, ins_block, ancestors, descendants)
             if not minimal:
                 s += '\t%d [shape=box,label=<%s<br align="left"/><b>%x</b>:<br align="left"/>%s<br align="left"/>%s<br align="left"/>>];\n' % (
                     bb.start, from_block, bb.start, ins_block, to_block)
@@ -139,19 +189,34 @@ class CFG(object):
         return s
 
     def trim(self):
+        """
+        Trim the CFG by removing unreachable basic blocks.
+        """
         keep = set(self.root.descendants)
         self.bbs = [bb for bb in self.bbs if bb.start in keep]
         delete = set(self._bb_at.keys()) - keep
         for addr in delete:
             del self._bb_at[addr]
 
-    def to_json(self):
+    def to_json(self) -> Dict:
+        """
+        Convert the CFG to JSON format.
+
+        :return: JSON representation of the CFG.
+        """
         return {'bbs': [{'start': bb.start,
                          'succs': [{'start': succ.start, 'paths': list(succ.pred_paths[bb])} for succ in
                                    sorted(bb.succ)]} for bb in sorted(self.bbs)]}
 
     @staticmethod
-    def from_json(json_dict, code):
+    def from_json(json_dict: Dict, code: bytes) -> 'CFG':
+        """
+        Create a CFG object from a JSON representation.
+
+        :param json_dict: JSON representation of the CFG.
+        :param code: Bytecode of the program.
+        :return: CFG object.
+        """
         from .disassembly import disass
         bbs = list()
         for bb_dict in json_dict['bbs']:
@@ -166,7 +231,13 @@ class CFG(object):
         return cfg
 
     @staticmethod
-    def distance_map(ins):
+    def distance_map(ins) -> Dict:
+        """
+        Compute the distance map for an instruction.
+
+        :param ins: Instruction to compute the distance map for.
+        :return: Dictionary representing the distance map.
+        """
         dm = dict()
         todo = deque()
         todo.append((ins.bb, 0))
